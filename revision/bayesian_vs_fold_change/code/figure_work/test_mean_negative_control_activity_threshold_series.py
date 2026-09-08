@@ -50,6 +50,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--effect-threshold", type=float, default=0.0)
     parser.add_argument("--q-cutoff", type=float, default=0.05)
     parser.add_argument(
+        "--skip-filtered",
+        action="store_true",
+        help=(
+            "Compute only the all-seven-control reference and skip the "
+            "control-T7-matched series."
+        ),
+    )
+    parser.add_argument(
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"
     )
     parser.add_argument(
@@ -117,6 +125,8 @@ def main() -> None:
                 METHOD,
             )
         )
+        if args.skip_filtered:
+            continue
         filtered_frames.append(
             compute_tests(
                 log_gamma,
@@ -135,15 +145,19 @@ def main() -> None:
         )
 
     unfiltered = pd.concat(unfiltered_frames, ignore_index=True)
-    filtered = pd.concat(filtered_frames, ignore_index=True)
     unfiltered["significant_q"] = unfiltered["q_right"].le(args.q_cutoff)
-    filtered["significant_q"] = filtered["q_right"].le(args.q_cutoff)
     unfiltered_path = args.tables_dir / f"{args.unfiltered_stem}.csv.gz"
-    filtered_path = args.tables_dir / f"{args.filtered_stem}.csv.gz"
     unfiltered.to_csv(unfiltered_path, index=False)
-    filtered.to_csv(filtered_path, index=False)
+    emitted = [unfiltered]
+    filtered_path = None
+    if not args.skip_filtered:
+        filtered = pd.concat(filtered_frames, ignore_index=True)
+        filtered["significant_q"] = filtered["q_right"].le(args.q_cutoff)
+        filtered_path = args.tables_dir / f"{args.filtered_stem}.csv.gz"
+        filtered.to_csv(filtered_path, index=False)
+        emitted.append(filtered)
 
-    summary = pd.concat([unfiltered, filtered], ignore_index=True).groupby(
+    summary = pd.concat(emitted, ignore_index=True).groupby(
         ["method", "t7_threshold"], sort=False
     ).agg(
         eligible_tests=("q_right", "size"),
@@ -160,6 +174,7 @@ def main() -> None:
             "posterior": str(posterior_path),
             "thresholds": thresholds,
             "unfiltered_reference": "mean of all seven ordinary controls",
+            "skip_filtered": bool(args.skip_filtered),
             "filtered_reference": (
                 "mean of controls with individual cell-type T7 >= the panel threshold; "
                 "at least one retained control required"
@@ -169,7 +184,9 @@ def main() -> None:
             "summary": summary.to_dict(orient="records"),
             "outputs": {
                 "unfiltered_tests": str(unfiltered_path),
-                "filtered_tests": str(filtered_path),
+                "filtered_tests": (
+                    None if filtered_path is None else str(filtered_path)
+                ),
                 "manifest": str(manifest_path),
             },
         },

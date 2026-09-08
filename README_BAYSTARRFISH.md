@@ -26,17 +26,43 @@ Treat `k` as a latent variable and integrate it out.
 
 ```
 latent copies   k_ij      ~ Poisson(lambda_sj),  lambda_sj = rho_s * a_j
-T7 channel      t7_ij  | k ~ NB2(mean = k * beta_t7,     disp = phi_t7)
-cCRE channel    cre_ij | k ~ NB2(mean = k * gamma_sj,    disp = phi_cre)
+
+T7 channel      t7_ij  | k ~  delta_0                                                  if k = 0
+                              ZINB(drop = d_t7,  mean = k * beta_t7,   disp = phi_t7)  if k > 0
+
+cCRE channel    cre_ij | k ~  delta_0                                                  if k = 0
+                              ZINB(drop = d_cre, mean = k * gamma_sj,  disp = phi_cre) if k > 0
+
+where  ZINB(drop = d, mean = m, disp = phi)  =  d * delta_0 + (1 - d) * NB2(mean = m, disp = phi)
 ```
 
-with, for cell type `s` and cCRE `j`:
+`delta_0` is the point mass at zero: an uninfected cell gives probability exactly
+1 to a zero and 0 to any positive count, never "an NB with mean 0". So an
+observed zero is one of three things — an uninfected cell (`k = 0`, probability
+`exp(-lambda_sj)`, carrying no information about `gamma`), an infected cell whose
+transcript was missed by the measurement (probability `d_c`), or an infected cell
+that genuinely sampled a zero from the NB. Keeping those apart is what stops rare
+infection from masquerading as low activity.
 
-- `k = 0` forcing **both** channels to exactly zero — a point mass, not a
-  negative binomial with mean zero;
-- optional **zero-inflated measurement dropout** per channel, applied only where
-  `k > 0` (an uninfected cell is already a zero, so attributing it to dropout
-  would double-count);
+The zero inflation sits inside the emission distribution and only at `k > 0`: it
+describes the *measurement*, while `exp(-lambda_sj)` describes the *biology*.
+Inflating the `k = 0` row as well would double-count the same zero and let `d_c`
+absorb the infection rate.
+
+Both channels share the same `k`, so the zero cases are coupled: `k = 0` forces
+`t7_ij = 0` **and** `cre_ij = 0` simultaneously, while `(t7 > 0, cre = 0)` is
+only reachable through the `k > 0` zero branch. That coupling is what identifies
+`d_cre` separately from `gamma`.
+
+With `infection_model="copy_number"`, `d_t7 = d_cre = 0` and each ZINB collapses
+to the plain NB2. With `infection_model="copy_number_dropout"` (the production
+fit) each channel carries one global `d_c ~ Beta(1, 9)`.
+`infection_model="binary"` replaces the copy count with a shared Bernoulli gate,
+`p_infected = 1 - exp(-rho_s a_j)`: the `k = 0` row becomes the "not infected"
+branch and both channels share one gate instead of one `k`.
+
+Around that observation model sit:
+
 - a two-level **class → subclass** hierarchy on the infection rate `rho` and,
   optionally, on the activity `gamma`;
 - an informative **nanopore library prior** on the per-cCRE abundance `a`, mean-

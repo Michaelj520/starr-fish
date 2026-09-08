@@ -12,6 +12,17 @@ both terms is carried through::
     p_right = P(contrast <= 0)          # posterior tail probability
     q_right = BH(p_right)
 
+The mirror-image question -- is this cCRE *less* active than its controls, i.e.
+a silencer -- is the same contrast read from the other side. With
+``alternative="less"`` the threshold is added rather than subtracted and the
+tail is taken on the other side::
+
+    contrast_d = log_gamma[d, s, j] - mean_{j' in controls} log_gamma[d, s, j']
+                 + effect_threshold
+
+    p_left = P(contrast >= 0)
+    q_left = BH(p_left)
+
 Because the contrast is formed inside each posterior draw, the control mean's
 own uncertainty is subtracted correctly rather than being treated as a fixed
 offset.
@@ -23,6 +34,8 @@ filter are dropped entirely -- there is no reference to contrast against.
 """
 
 from __future__ import annotations
+
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -47,6 +60,7 @@ def negative_control_test(
     individual_control_t7_threshold: float | None,
     method: str,
     control_sd_multiplier: float = 0.0,
+    alternative: Literal["greater", "less"] = "greater",
 ) -> pd.DataFrame:
     """Contrast every eligible target cCRE against the negative-control mean.
 
@@ -71,11 +85,18 @@ def negative_control_test(
     control_sd_multiplier
         Raise the reference by ``k`` control standard deviations (per draw) for a
         stricter null. Requires at least two surviving controls.
+    alternative
+        ``"greater"`` (default) tests for activity above the control reference and
+        emits ``p_right`` / ``q_right``; ``"less"`` tests for activity below it --
+        the silencer direction -- and emits ``p_left`` / ``q_left``.
 
     Returns a tidy frame with one row per tested (cell type, cCRE) pair.
     """
     if control_sd_multiplier < 0:
         raise ValueError("control_sd_multiplier must be non-negative")
+    if alternative not in ("greater", "less"):
+        raise ValueError(f"alternative must be 'greater' or 'less', got {alternative!r}")
+    right_tail = alternative == "greater"
     # The reference is built by the module the per-cell normalised activity also
     # uses, so a map and the table it accompanies cannot disagree about what
     # "background" means.
@@ -104,8 +125,33 @@ def negative_control_test(
         target_draws = log_gamma[:, group_idx, selected_indices].astype(
             np.float64, copy=False
         )
-        contrasts = target_draws - control_reference_draws[:, None] - effect_threshold
+        # The threshold shifts the null towards the alternative being tested, so it
+        # is subtracted for a right tail and added for a left one.
+        signed_threshold = effect_threshold if right_tail else -effect_threshold
+        contrasts = target_draws - control_reference_draws[:, None] - signed_threshold
         contrast_lo, contrast_hi = np.quantile(contrasts, [0.05, 0.95], axis=0)
+        tail_probability = (
+            (contrasts <= 0.0).mean(axis=0)
+            if right_tail
+            else (contrasts >= 0.0).mean(axis=0)
+        )
+        directional = (
+            {
+                "posterior_probability_above_control_reference": (
+                    contrasts > 0.0
+                ).mean(axis=0),
+                # Backward-compatible aliases used by existing comparison code.
+                "posterior_probability_above_mean_control": (contrasts > 0.0).mean(axis=0),
+                "p_right": tail_probability,
+            }
+            if right_tail
+            else {
+                "posterior_probability_below_control_reference": (
+                    contrasts < 0.0
+                ).mean(axis=0),
+                "p_left": tail_probability,
+            }
+        )
         records.append(
             pd.DataFrame(
                 {
@@ -135,22 +181,17 @@ def negative_control_test(
                     "effect_vs_control_reference_mean": contrasts.mean(axis=0),
                     "effect_vs_control_reference_lo90": contrast_lo,
                     "effect_vs_control_reference_hi90": contrast_hi,
-                    "posterior_probability_above_control_reference": (
-                        contrasts > 0.0
-                    ).mean(axis=0),
-                    # Backward-compatible aliases used by existing comparison code.
                     "effect_vs_mean_control_mean": contrasts.mean(axis=0),
                     "effect_vs_mean_control_lo90": contrast_lo,
                     "effect_vs_mean_control_hi90": contrast_hi,
-                    "posterior_probability_above_mean_control": (
-                        contrasts > 0.0
-                    ).mean(axis=0),
-                    "p_right": (contrasts <= 0.0).mean(axis=0),
+                    **directional,
                 }
             )
         )
     if not records:
         raise ValueError("No cCRE-cell-type pairs passed the T7 filters")
     output = pd.concat(records, ignore_index=True)
-    output["q_right"] = bh_fdr(output["p_right"].to_numpy(float))
+    p_column = "p_right" if right_tail else "p_left"
+    q_column = "q_right" if right_tail else "q_left"
+    output[q_column] = bh_fdr(output[p_column].to_numpy(float))
     return output

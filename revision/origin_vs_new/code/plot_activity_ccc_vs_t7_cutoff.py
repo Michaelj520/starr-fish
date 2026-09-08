@@ -22,8 +22,10 @@ ANALYSIS_DIR = HERE.parent.parent
 REPO_ROOT = ANALYSIS_DIR.parents[1]
 ORIGIN_ANALYSIS = REPO_ROOT / "revision" / "bayesian_vs_fold_change"
 ORIGIN_CODE = ORIGIN_ANALYSIS / "code"
-if str(ORIGIN_CODE) not in sys.path:
-    sys.path.insert(0, str(ORIGIN_CODE))
+# the *_threshold_series helpers live one level down in figure_work/
+for _origin_path in (ORIGIN_CODE, ORIGIN_CODE / "figure_work"):
+    if str(_origin_path) not in sys.path:
+        sys.path.insert(0, str(_origin_path))
 
 from compute_t7_filter_negative_control_stats import (  # noqa: E402
     aligned_t7_totals,
@@ -66,6 +68,8 @@ DEFAULT_ORIGIN_BOOTSTRAP = REPO_ROOT / "revision" / "Bootstrap_OldData"
 DEFAULT_NEW_BOOTSTRAP = REPO_ROOT / "revision" / "Bootstrap_NewData"
 DEFAULT_OUTPUT_DIR = ANALYSIS_DIR / "results" / "comparison"
 DEFAULT_CUTOFFS = [0, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+# highest cutoff drawn on the CCC-vs-cutoff x-axis (computation keeps them all)
+DEFAULT_PLOT_MAX_CUTOFF = 100.0
 KEY = ["group", "cre"]
 
 
@@ -81,6 +85,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--new-bootstrap", type=Path, default=DEFAULT_NEW_BOOTSTRAP)
     parser.add_argument(
         "--t7-cutoffs", type=float, nargs="+", default=DEFAULT_CUTOFFS
+    )
+    parser.add_argument(
+        "--plot-max-t7-cutoff",
+        type=float,
+        default=DEFAULT_PLOT_MAX_CUTOFF,
+        help="highest T7 cutoff drawn on the CCC-vs-cutoff x-axis (pass a large "
+             "value to keep every computed cutoff)",
     )
     parser.add_argument("--minimum-unit-pairs", type=int, default=10)
     parser.add_argument("--bootstrap-chunk-size", type=int, default=250)
@@ -387,7 +398,21 @@ def validate_t7_50_reference(metrics: pd.DataFrame) -> None:
             )
 
 
-def plot_metrics(metrics: pd.DataFrame, output_stem: Path) -> None:
+def plot_metrics(
+    metrics: pd.DataFrame,
+    output_stem: Path,
+    *,
+    max_cutoff: float | None = DEFAULT_PLOT_MAX_CUTOFF,
+) -> None:
+    """Plot CCC against T7 cutoff, drawing only cutoffs <= ``max_cutoff``.
+
+    The table keeps every computed cutoff; the cap trims the x-axis where the
+    sparse high-cutoff points (200, 500) add noise rather than signal.
+    """
+    if max_cutoff is not None:
+        metrics = metrics.loc[metrics["t7_cutoff"].le(max_cutoff)]
+        if metrics.empty:
+            raise ValueError(f"no cutoffs at or below {max_cutoff}")
     cutoffs = metrics["t7_cutoff"].drop_duplicates().tolist()
     positions = np.arange(len(cutoffs))
     styles = {
@@ -634,7 +659,7 @@ def main() -> None:
     table_path = tables_dir / "activity_concordance_ccc_vs_t7_cutoff.csv"
     figure_stem = figures_dir / "activity_concordance_ccc_vs_t7_cutoff"
     metrics.to_csv(table_path, index=False)
-    plot_metrics(metrics, figure_stem)
+    plot_metrics(metrics, figure_stem, max_cutoff=args.plot_max_t7_cutoff)
     celltype_summary_path = tables_dir / "mean_celltype_ccc_vs_t7_cutoff.csv"
     celltype_detail_path = tables_dir / "celltype_ccc_by_t7_cutoff.csv.gz"
     ccre_summary_path = tables_dir / "mean_ccre_ccc_vs_t7_cutoff.csv"

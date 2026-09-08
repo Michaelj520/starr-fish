@@ -11,6 +11,11 @@ The parallel annotated analysis instead promotes an existing per-cell label
 (currently ``supertype_name``) to the model's subclass grouping for the same
 target subclasses.  The validation in this module keeps that relabelling
 traceable and prevents standardized names from being silently merged.
+
+The size-matched random null reuses that validated annotation only for its
+group sizes: each target subclass is shuffled and cut into random blocks whose
+cell counts equal the annotated supertype counts, so cell support is held fixed
+while biological structure is removed.
 """
 
 from __future__ import annotations
@@ -216,3 +221,100 @@ def relabel_subclasses_from_obs(
     relabelled = subclasses.astype(object)
     relabelled[target_mask] = standardized[target_mask]
     return relabelled, selected.sort_values("position"), members_by_subclass
+
+
+def matched_group_label(subclass: str, index: int) -> str:
+    return f"{subclass}_random_{index}"
+
+
+def relabel_subclasses_size_matched(
+    subclasses: np.ndarray,
+    subgroup_labels: np.ndarray,
+    targets: list[str],
+    seed: int = SPLIT_SEED,
+) -> tuple[np.ndarray, pd.DataFrame, dict[str, list[str]]]:
+    """Partition each target subclass into random groups matching supertype sizes.
+
+    This is the size-matched random null for the annotated-supertype analysis:
+    within every target subclass the cells are shuffled once and cut, without
+    replacement, into blocks whose sizes are exactly the annotated supertype
+    sizes of that subclass. Group ``i`` therefore has the same cell support as
+    the ``i``-th annotated supertype but no biological structure, so any
+    residual between-group divergence measures estimation noise at that cell
+    count rather than heterogeneity.
+
+    The annotated labels are validated by :func:`relabel_subclasses_from_obs`
+    before being reduced to sizes, so the same standardization, collision, and
+    cross-parent guarantees apply. An independent RNG stream is spawned per
+    target subclass from ``seed`` so the partition is stable regardless of
+    target ordering.
+    """
+    _, reference, members_by_subclass = relabel_subclasses_from_obs(
+        subclasses, subgroup_labels, targets
+    )
+    subclasses = np.asarray(subclasses).astype(str)
+    seed_seq = np.random.SeedSequence(seed)
+    child_seeds = {
+        target: child
+        for target, child in zip(sorted(targets), seed_seq.spawn(len(targets)))
+    }
+
+    relabelled = subclasses.astype(object)
+    matched_members: dict[str, list[str]] = {}
+    records = []
+    for target in sorted(targets):
+        source_members = members_by_subclass[target]
+        sizes = (
+            reference.loc[
+                reference["original_subclass"] == target, "new_subclass"
+            ]
+            .value_counts()
+            .reindex(source_members)
+            .astype(int)
+            .to_numpy()
+        )
+        positions = np.flatnonzero(subclasses == target)
+        if positions.size != int(sizes.sum()):
+            raise ValueError(
+                f"{target!r} has {positions.size} cells but annotated supertype "
+                f"sizes sum to {int(sizes.sum())}"
+            )
+        rng = np.random.default_rng(child_seeds[target])
+        shuffled = rng.permutation(positions)
+        blocks = np.split(shuffled, np.cumsum(sizes)[:-1])
+        labels = []
+        for index, (source, block, size) in enumerate(
+            zip(source_members, blocks, sizes), start=1
+        ):
+            if block.size != int(size):
+                raise ValueError(
+                    f"size-matched block for {target!r} group {index} has "
+                    f"{block.size} cells; expected {int(size)}"
+                )
+            label = matched_group_label(target, index)
+            labels.append(label)
+            relabelled[block] = label
+            records.append(
+                pd.DataFrame(
+                    {
+                        "position": block,
+                        "original_subclass": target,
+                        "matched_supertype": source,
+                        "group": index,
+                        "new_subclass": label,
+                    }
+                )
+            )
+        matched_members[target] = labels
+
+    all_labels = [label for labels in matched_members.values() for label in labels]
+    if len(set(all_labels)) != len(all_labels):
+        raise ValueError("size-matched group labels are not unique")
+    collisions = sorted(set(all_labels) & set(subclasses), key=natural_key)
+    if collisions:
+        raise ValueError(
+            f"size-matched group labels collide with existing subclasses: {collisions}"
+        )
+
+    assignment = pd.concat(records, ignore_index=True).sort_values("position")
+    return relabelled, assignment, {target: matched_members[target] for target in targets}

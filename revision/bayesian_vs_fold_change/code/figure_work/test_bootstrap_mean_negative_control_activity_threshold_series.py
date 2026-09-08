@@ -49,6 +49,14 @@ def parse_args() -> argparse.Namespace:
         "--t7-thresholds", type=float, nargs="+", default=[5, 10, 20, 50, 100]
     )
     parser.add_argument("--q-cutoff", type=float, default=0.05)
+    parser.add_argument(
+        "--skip-filtered",
+        action="store_true",
+        help=(
+            "Compute only the all-seven-control reference. The filtered series "
+            "needs one extra full pass over the bootstrap array per threshold."
+        ),
+    )
     parser.add_argument("--chunk-size", type=int, default=250)
     parser.add_argument(
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"
@@ -176,7 +184,7 @@ def main() -> None:
     ]
 
     filtered_frames = []
-    for threshold in thresholds:
+    for threshold in [] if args.skip_filtered else thresholds:
         print(
             "[bootstrap-series] computing reference from controls with "
             f"individual T7 >= {threshold:g}"
@@ -201,12 +209,16 @@ def main() -> None:
         )
 
     unfiltered = pd.concat(unfiltered_frames, ignore_index=True)
-    filtered = pd.concat(filtered_frames, ignore_index=True)
     unfiltered_path = args.tables_dir / f"{args.unfiltered_stem}.csv.gz"
-    filtered_path = args.tables_dir / f"{args.filtered_stem}.csv.gz"
     unfiltered.to_csv(unfiltered_path, index=False)
-    filtered.to_csv(filtered_path, index=False)
-    summary = pd.concat([unfiltered, filtered], ignore_index=True).groupby(
+    emitted = [unfiltered]
+    filtered_path = None
+    if not args.skip_filtered:
+        filtered = pd.concat(filtered_frames, ignore_index=True)
+        filtered_path = args.tables_dir / f"{args.filtered_stem}.csv.gz"
+        filtered.to_csv(filtered_path, index=False)
+        emitted.append(filtered)
+    summary = pd.concat(emitted, ignore_index=True).groupby(
         ["method", "t7_threshold"], sort=False
     ).agg(
         eligible_tests=("q_right", "size"),
@@ -223,6 +235,7 @@ def main() -> None:
             "bootstrap_dir": str(args.bootstrap_dir),
             "thresholds": thresholds,
             "unfiltered_reference": "mean of all seven ordinary controls",
+            "skip_filtered": bool(args.skip_filtered),
             "filtered_reference": (
                 "mean of controls with individual cell-type T7 >= the panel threshold; "
                 "at least one retained control required"
@@ -239,7 +252,9 @@ def main() -> None:
             "summary": summary.to_dict(orient="records"),
             "outputs": {
                 "unfiltered_tests": str(unfiltered_path),
-                "filtered_tests": str(filtered_path),
+                "filtered_tests": (
+                    None if filtered_path is None else str(filtered_path)
+                ),
                 "manifest": str(manifest_path),
             },
         },

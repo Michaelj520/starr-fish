@@ -59,6 +59,15 @@ not hidden.
   T7-filtered statistics and comparison.
 - `code/compare_bootstrap_origin_vs_new.py`: old-versus-new bootstrap
   overlap comparison.
+- `code/submit_replicate_concordance_precision_recall.slurm`: the
+  replicate-concordant precision-recall job. It computes the two missing new
+  low-dose threshold series - Bayesian and bootstrap mean-control tests at T7
+  5, 10, 20, 50 and 100, both with `--skip-filtered` because the figure uses the
+  all-seven-control reference only - into `../Bayes_NewData/tables/`, then draws
+  the figure and finally re-runs the analysis with `--no-common-pairs
+  --validate-calls` as a reproduction check against the saved T7 >= 50
+  concordance table. The original-experiment series already exist under
+  `../bayesian_vs_fold_change/results/tables/`.
 - `code/plot_activity_ccc_vs_t7_cutoff.py`: combined Bayesian/bootstrap
   Lin's-CCC sensitivity curve at T7 cutoffs 0, 1, 2, 5, 10, 20, 50, 100,
   200, and 500. It also reports mean within-cell-type CCC across cCREs and
@@ -101,19 +110,32 @@ not hidden.
   `--source mean_plus_1sd` the draw-wise mean+1 SD reference. The recomputed BH
   calls are required to reproduce the `*_significant_common_q` columns of the
   source table exactly.
-- `code/plot_replicate_concordance_precision_recall.py`: precision/recall of the
-  BH calls behind `overlap_t7_ge50_significant_call_concordance_bh_q` against the
-  ATAC-peak and chromatin-state-a assays. It imports `ASSAYS`,
-  `assay_positive_for_tests`, and `benchmark_assay` from
-  `revision/bayesian_vs_fold_change/code/plot_t7_filter_precision_recall.py`, so
-  the definitions match the published precision-recall figure exactly:
-  assay-positive is the assay matrix above 0.5, precision is TP/significant,
-  recall is TP/assay-positive, the dashed line is the naive-precision assay
-  prevalence, and the one-sided Fisher test is retained. Five call sets are
-  compared: each replicate alone, their union, their intersection, and the
-  replicate-concordant universe, which keeps only the pairs where the two
-  replicates agree and therefore restricts the assay-positive pairs to that same
-  universe.
+- `code/plot_replicate_concordance_precision_recall.py`: the published
+  T7-threshold precision-recall figure
+  (`revision/bayesian_vs_fold_change/results/figures/final/`
+  `method_activity_t7_filter_precision_recall.pdf`) restricted, for both
+  methods, to the cCRE-cell-type pairs whose call agrees between the two
+  experiments. At every T7 threshold (5, 10, 20, 50, 100) and for each method -
+  Bayesian `Joint+dropout mean controls` and `Bootstrap mean controls` - the
+  original and new low-dose threshold-series test tables are intersected on
+  their eligible pairs, BH is recomputed inside that shared universe separately
+  per experiment (the definition behind
+  `overlap_t7_ge50_significant_call_concordance_bh_q`), and only the concordant
+  pairs - `both_significant` or `neither_significant` at `q <= 0.05` - are
+  evaluated. The tested universe of the figure is therefore the concordant set,
+  so the recall denominator and the naive-precision baseline are restricted to
+  it as well; the plotted `q_right` is the per-pair `max(origin_q, new_q)`,
+  which reproduces the shared call on concordant pairs. `--common-pairs` (the
+  default, matching the published figure) first intersects the eligible pairs of
+  all four test tables at each threshold, so both methods start from one
+  identical universe before their own concordance filter. `--no-common-pairs`
+  lets each method use its own origin/new intersection; at T7 >= 50 that
+  reproduces the saved Bayesian concordance table exactly, which
+  `--validate-calls` requires. It imports `ASSAYS`,
+  `assay_positive_for_tests`, `benchmark_assay`, and `plot_precision_recall`
+  from `revision/bayesian_vs_fold_change/code/plot_t7_filter_precision_recall.py`,
+  so the metric definitions, the panel layout, the method colours, and the
+  dashed naive-precision baseline are the published ones.
 - `code/plot_origin_vs_new_heatmap.py`: matched original/new activity heatmap
   with test diagnostics. It plots the exported per-dataset matrices and derives
   nothing but the shared-universe BH: the colours are read from
@@ -178,12 +200,17 @@ not hidden.
   also gets `tables/*_significant_call_concordance_calls.csv.gz` (per-pair
   p-values, BH q-values, and both call statuses) and
   `tables/*_significant_call_concordance_summary.json` (metrics for both bases).
-- `results/comparison/figures/replicate_concordant_bh_call_precision_recall.pdf`:
-  precision/recall of the BH call sets against both assays;
+- `results/comparison/figures/replicate_concordant_bh_call_precision_recall.pdf`
+  (and `.png`): precision/recall of the replicate-concordant calls of both
+  methods against both assays, at T7 >= 5, 10, 20, 50 and 100.
   `tables/replicate_concordant_bh_call_precision_recall.csv` holds every
-  TP/significant/assay-positive/tested count with the Fisher statistics, and
-  `..._manifest.json` records the concordant-status counts and per-assay coverage
-  of both universes.
+  TP/significant/assay-positive/tested count with the Fisher statistics,
+  `..._calls.csv.gz` every pair's origin/new p-values, shared-universe BH
+  q-values and call status per method and threshold, and `..._manifest.json` the
+  common-pair counts, the four call-status counts, and the per-assay coverage of
+  each method's concordant universe. `..._per_method_pairs*` is the same
+  analysis without the cross-method intersection, kept because it is the arm
+  that reproduces the saved T7 >= 50 concordance table.
 - `results/comparison/figures/origin_vs_new_replicate_concordant_activity_heatmap_t7_ge50.pdf`:
   the same heatmap style restricted to the 925 replicate-concordant pairs
   (`bh_q_call_status` of `both_significant` or `neither_significant`) on the mean

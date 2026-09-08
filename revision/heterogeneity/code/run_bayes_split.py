@@ -48,11 +48,21 @@ from relabel import (  # noqa: E402
     TOP_N,
     relabel_subclasses,
     relabel_subclasses_from_obs,
+    relabel_subclasses_size_matched,
     top_subclasses,
 )
 
 DEFAULT_OUTDIR = ANALYSIS_DIR / "results" / "split" / "bayesian"
 DEFAULT_SUPERTYPE_OUTDIR = ANALYSIS_DIR / "results" / "supertype" / "bayesian"
+DEFAULT_SUPERTYPE_LIKE_RANDOM_OUTDIR = (
+    ANALYSIS_DIR / "results" / "supertype_like_random" / "bayesian"
+)
+OUTDIR_BY_GROUPING = {
+    "random": DEFAULT_OUTDIR,
+    "supertype": DEFAULT_SUPERTYPE_OUTDIR,
+    "supertype_like_random": DEFAULT_SUPERTYPE_LIKE_RANDOM_OUTDIR,
+}
+SUBGROUP_OBS_COLUMN = "supertype_name"
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,11 +71,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outdir", type=Path, default=None)
     parser.add_argument(
         "--grouping",
-        choices=["random", "supertype"],
+        choices=["random", "supertype", "supertype_like_random"],
         default="random",
         help=(
             "Within-target grouping strategy. 'random' preserves the existing "
-            "five-way split; 'supertype' uses h5ad obs['supertype_name']."
+            "five-way split; 'supertype' uses h5ad obs['supertype_name']; "
+            "'supertype_like_random' draws random groups without replacement "
+            "whose sizes match the annotated supertype sizes of each target."
         ),
     )
     parser.add_argument("--level", choices=["class", "subclass"], default="subclass")
@@ -117,11 +129,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     if args.outdir is None:
-        args.outdir = (
-            DEFAULT_OUTDIR
-            if args.grouping == "random"
-            else DEFAULT_SUPERTYPE_OUTDIR
-        )
+        args.outdir = OUTDIR_BY_GROUPING[args.grouping]
     if args.activity_model == "direct" and args.negative_control_mode != "ordinary":
         raise ValueError(
             "--activity-model direct requires --negative-control-mode ordinary"
@@ -166,18 +174,22 @@ def main() -> None:
         }
         subgroup_obs_column = None
     else:
-        subgroup_obs_column = "supertype_name"
+        subgroup_obs_column = SUBGROUP_OBS_COLUMN
         if subgroup_obs_column not in adata.obs.columns:
             raise KeyError(
                 f"h5ad obs is missing required column {subgroup_obs_column!r}"
             )
-        relabelled, assignment, subgroups_by_subclass = (
-            relabel_subclasses_from_obs(
-                original,
-                adata.obs[subgroup_obs_column].to_numpy(),
-                targets,
+        source_labels = adata.obs[subgroup_obs_column].to_numpy()
+        if args.grouping == "supertype":
+            relabelled, assignment, subgroups_by_subclass = (
+                relabel_subclasses_from_obs(original, source_labels, targets)
             )
-        )
+        else:
+            relabelled, assignment, subgroups_by_subclass = (
+                relabel_subclasses_size_matched(
+                    original, source_labels, targets, seed=args.split_seed
+                )
+            )
     adata.obs["subclass"] = relabelled
     n_subgroups_by_subclass = {
         target: len(members) for target, members in subgroups_by_subclass.items()
@@ -274,6 +286,13 @@ def main() -> None:
             {
                 "n_groups": args.n_groups,
                 "split_seed": args.split_seed,
+            }
+        )
+    elif args.grouping == "supertype_like_random":
+        grouping_config.update(
+            {
+                "split_seed": args.split_seed,
+                "size_matched_source_column": subgroup_obs_column,
             }
         )
     result["config"].update(

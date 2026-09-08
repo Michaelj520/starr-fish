@@ -529,7 +529,15 @@ def plot_precision_recall(
     *,
     methods: tuple[str, ...],
     common_pairs: bool = False,
+    title_note: str | None = None,
 ) -> None:
+    """Draw the T7-threshold precision/recall panel grid.
+
+    ``title_note`` is appended to the caption as its own line, which is how
+    callers that narrow the tested universe (for example the replicate-
+    concordant figure in ``revision/origin_vs_new``) record that restriction
+    without duplicating this layout.
+    """
     sns.set_theme(context="paper", style="whitegrid")
     thresholds = sorted(summary["t7_threshold"].unique())
     threshold_labels = {threshold: f">={threshold:g}" for threshold in thresholds}
@@ -631,7 +639,8 @@ def plot_precision_recall(
             "; common tested pairs within each T7 group"
             if common_pairs
             else ""
-        ),
+        )
+        + (f"\n{title_note}" if title_note else ""),
         fontsize=12,
     )
     sns.despine(fig=fig)

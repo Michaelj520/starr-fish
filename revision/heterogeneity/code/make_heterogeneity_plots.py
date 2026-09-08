@@ -29,7 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import binomtest, shapiro, spearmanr, ttest_rel, wilcoxon
 
 CODE_DIR = Path(__file__).resolve().parent
 ANALYSIS_DIR = CODE_DIR.parent
@@ -38,9 +38,25 @@ REF_RESULTS = REVISION_DIR / "bayesian_vs_fold_change" / "results"
 sys.path.insert(0, str(REVISION_DIR / "bayesian_vs_fold_change" / "code"))
 sys.path.insert(0, str(CODE_DIR))
 
-from analysis_utils import LIBSIZE_CSV, OLD_DATA_BOOTSTRAP, log, write_json  # noqa: E402
+from analysis_utils import (  # noqa: E402
+    LIBSIZE_CSV,
+    OLD_DATA_BOOTSTRAP,
+    jsonable,
+    log,
+    write_json,
+)
 
 MODELS = ("bayesian", "bootstrap")
+# Groupings that produce many unequal-size subgroups per parent cell type and
+# therefore share the cell-count-weighted mean and the pairwise-CCC analysis.
+# 'supertype_like_random' is the size-matched random null for 'supertype'.
+SUPERTYPE_LIKE_GROUPINGS = ("supertype", "supertype_like_random")
+GROUPINGS = ("random",) + SUPERTYPE_LIKE_GROUPINGS
+SUBGROUP_NOUN = {
+    "random": "random subset",
+    "supertype": "annotated supertype",
+    "supertype_like_random": "size-matched random subset",
+}
 BOOT_ACTIVITY_FILE = "log_activity_vs_negative_control.csv"
 GROUP_RE = re.compile(r"^(?P<subclass>.+)_group_(?P<group>\d+)$")
 
@@ -66,6 +82,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model", choices=["bayesian", "bootstrap"], default="bayesian"
     )
+    parser.add_argument(
+        "--null-split-bayes-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Bayesian fit directory of the size-matched random null "
+            "(--grouping supertype_like_random). When given, the pairwise-CCC "
+            "figure gains a second box per cell type and the annotated pairs "
+            "are tested against their size-matched counterparts with a paired "
+            "t-test."
+        ),
+    )
     parser.add_argument("--outdir", type=Path, default=ANALYSIS_DIR / "results")
     parser.add_argument(
         "--calibration",
@@ -84,6 +112,14 @@ def parse_args() -> argparse.Namespace:
         help="Number of cell-type panel columns (default: 5).",
     )
     return parser.parse_args()
+
+
+def subgroup_noun(grouping: str, plural: bool = False) -> str:
+    """Human-readable name of one subgroup under ``grouping``."""
+    if grouping not in SUBGROUP_NOUN:
+        raise ValueError(f"unsupported grouping={grouping!r}")
+    noun = SUBGROUP_NOUN[grouping]
+    return f"{noun}s" if plural else noun
 
 
 def discover_tag(bayes_dir: Path) -> str:
@@ -231,7 +267,7 @@ def split_targets(
     empty = [target for target, labels in members.items() if not labels]
     if empty:
         raise ValueError(f"split manifest has targets without subgroups: {empty}")
-    if grouping not in {"random", "supertype"}:
+    if grouping not in GROUPINGS:
         raise ValueError(f"unsupported grouping={grouping!r}")
     return targets, members, grouping
 
@@ -246,7 +282,7 @@ def artifact_names(grouping: str, model: str = "bayesian") -> dict[str, str]:
             "figure": "bayesian_subset_mean_vs_whole",
             "manifest": "heterogeneity_manifest.json",
         }
-    if grouping == "supertype" and model == "bayesian":
+    if grouping in SUPERTYPE_LIKE_GROUPINGS and model == "bayesian":
         return {
             "table": "bayesian_supertype_vs_whole.csv",
             "summary": "bayesian_supertype_vs_whole_summary.csv",
@@ -268,7 +304,7 @@ def artifact_names(grouping: str, model: str = "bayesian") -> dict[str, str]:
             "figure": "bootstrap_subset_mean_vs_whole",
             "manifest": "bootstrap_heterogeneity_manifest.json",
         }
-    if grouping == "supertype" and model == "bootstrap":
+    if grouping in SUPERTYPE_LIKE_GROUPINGS and model == "bootstrap":
         return {
             "table": "bootstrap_supertype_vs_whole.csv",
             "summary": "bootstrap_supertype_vs_whole_summary.csv",
@@ -1047,7 +1083,7 @@ def agreement_for_export(table: pd.DataFrame, grouping: str) -> pd.DataFrame:
                 "n_subgroups": "n_subsets",
             }
         )
-    if grouping == "supertype":
+    if grouping in SUPERTYPE_LIKE_GROUPINGS:
         return table[
             [
                 "cell_type",
@@ -1086,6 +1122,13 @@ def plot_bayesian_subset_agreement(
     ncols: int,
     model: str = "bayesian",
 ) -> None:
+    noun = subgroup_noun(grouping)
+    noun_plural = subgroup_noun(grouping, plural=True)
+    dispersion_note = (
+        "between-supertype heterogeneity"
+        if grouping == "supertype"
+        else "estimation dispersion at matched cell support"
+    )
     ncols = min(len(targets), ncols)
     nrows = int(np.ceil(len(targets) / ncols))
     fig, axes = plt.subplots(
@@ -1139,12 +1182,12 @@ def plot_bayesian_subset_agreement(
         ccc = metrics["concordance_correlation"]
         mae = metrics["mae"]
         metric_text = f"CCC = {ccc:.2f}\nMAE = {mae:.2f}"
-        if grouping == "supertype":
+        if grouping in SUPERTYPE_LIKE_GROUPINGS:
             median_sd = metrics["median_supertype_sd"]
             metric_text += (
-                f"\nMedian supertype SD = {median_sd:.2f}"
+                f"\nMedian {noun} SD = {median_sd:.2f}"
                 if np.isfinite(median_sd)
-                else "\nMedian supertype SD = unavailable"
+                else f"\nMedian {noun} SD = unavailable"
             )
         ax.text(
             0.04,
@@ -1162,7 +1205,7 @@ def plot_bayesian_subset_agreement(
                 else (
                     f"{cell_type}\n(n = {cell_counts[cell_type]:,} cells; "
                     f"k = {len(subgroups_by_subclass[cell_type])} "
-                    f"{'supertype' if len(subgroups_by_subclass[cell_type]) == 1 else 'supertypes'})"
+                    f"{noun if len(subgroups_by_subclass[cell_type]) == 1 else noun_plural})"
                 )
             ),
             fontsize=10,
@@ -1171,13 +1214,16 @@ def plot_bayesian_subset_agreement(
         ax.set_ylabel(
             "Mean activity across 5 subsets"
             if grouping == "random"
-            else "Cell-count-weighted mean activity\nacross annotated supertypes"
+            else f"Cell-count-weighted mean activity\nacross {noun_plural}"
         )
-        if grouping == "supertype" and len(subgroups_by_subclass[cell_type]) == 1:
+        if (
+            grouping in SUPERTYPE_LIKE_GROUPINGS
+            and len(subgroups_by_subclass[cell_type]) == 1
+        ):
             ax.text(
                 0.04,
                 0.04,
-                "One annotated supertype; SD unavailable",
+                f"One {noun}; SD unavailable",
                 transform=ax.transAxes,
                 ha="left",
                 va="bottom",
@@ -1195,25 +1241,314 @@ def plot_bayesian_subset_agreement(
             "vs whole cell type"
             if grouping == "random"
             else (
-                f"{model.capitalize()} cCRE activity: cell-count-weighted mean of annotated "
-                "supertypes vs whole cell type"
+                f"{model.capitalize()} cCRE activity: cell-count-weighted mean of "
+                f"{noun_plural} vs whole cell type"
             )
         ),
         fontsize=14,
     )
-    if grouping == "supertype":
+    if grouping in SUPERTYPE_LIKE_GROUPINGS:
         fig.text(
             0.5,
             0.01,
             "Points: cell-count-weighted mean; vertical bars: ±1 unweighted SD "
-            "across annotated supertypes (between-supertype heterogeneity, not uncertainty).",
+            f"across {noun_plural} ({dispersion_note}, not uncertainty).",
             ha="center",
             va="bottom",
             fontsize=9,
             color="#444444",
         )
-    fig.tight_layout(rect=(0, 0.04 if grouping == "supertype" else 0, 1, 0.96))
+    fig.tight_layout(
+        rect=(0, 0.04 if grouping in SUPERTYPE_LIKE_GROUPINGS else 0, 1, 0.96)
+    )
     save_figure(fig, figures_dir / artifact_names(grouping, model)["figure"])
+
+
+def ordinal_pair_key(
+    pairwise: pd.DataFrame, subgroups_by_subclass: dict[str, list[str]]
+) -> pd.DataFrame:
+    """Key each pair by its parent and the ordinals of its two subgroups.
+
+    Ordinals come from the manifest membership order, which the size-matched
+    null preserves by construction: its ``i``-th random group carries the cell
+    count of the ``i``-th annotated supertype. Keying on ordinals rather than
+    labels is what makes the two runs comparable pair-for-pair.
+    """
+    keyed = pairwise.copy()
+    ordinals = {
+        cell_type: {member: index for index, member in enumerate(members)}
+        for cell_type, members in subgroups_by_subclass.items()
+    }
+    for column, target in (("supertype_1", "ordinal_1"), ("supertype_2", "ordinal_2")):
+        keyed[target] = [
+            ordinals[cell_type][member]
+            for cell_type, member in zip(keyed["cell_type"], keyed[column])
+        ]
+    return keyed
+
+
+def paired_null_comparison(
+    pairwise: pd.DataFrame,
+    null_pairwise: pd.DataFrame,
+    subgroups_by_subclass: dict[str, list[str]],
+    null_subgroups_by_subclass: dict[str, list[str]],
+) -> pd.DataFrame:
+    """Match annotated pairs to their size-matched random counterparts.
+
+    Every annotated pair is joined to the null pair built from the two random
+    groups with the same cell counts, so the difference in CCC isolates
+    biological divergence from estimation noise at fixed cell support. The cell
+    counts are re-checked after the join rather than assumed.
+    """
+    left = ordinal_pair_key(pairwise, subgroups_by_subclass)
+    right = ordinal_pair_key(null_pairwise, null_subgroups_by_subclass)
+    merged = left.merge(
+        right,
+        on=["cell_type", "ordinal_1", "ordinal_2"],
+        suffixes=("_annotated", "_null"),
+        how="inner",
+        validate="one_to_one",
+    )
+    if len(merged) != len(left) or len(merged) != len(right):
+        raise ValueError(
+            f"pair alignment is incomplete: {len(left)} annotated and "
+            f"{len(right)} null pairs matched {len(merged)} times"
+        )
+    for column in ("n_cells_1", "n_cells_2"):
+        mismatch = merged[f"{column}_annotated"] != merged[f"{column}_null"]
+        if mismatch.any():
+            offending = merged.loc[mismatch, "cell_type"].unique().tolist()
+            raise ValueError(
+                f"null groups are not size-matched to the annotated supertypes "
+                f"for {column} in {offending}"
+            )
+    merged["ccc_annotated"] = merged["concordance_correlation_annotated"]
+    merged["ccc_null"] = merged["concordance_correlation_null"]
+    merged["ccc_difference"] = merged["ccc_annotated"] - merged["ccc_null"]
+    return merged
+
+
+def hodges_lehmann(differences: np.ndarray) -> float:
+    """Median of the Walsh averages: the estimator Wilcoxon actually tests."""
+    if differences.size == 0:
+        return float("nan")
+    rows, cols = np.triu_indices(differences.size)
+    return float(np.median((differences[rows] + differences[cols]) / 2.0))
+
+
+def sign_flip_permutation_p(
+    differences: np.ndarray, seed: int, max_exact: int = 20, draws: int = 20_000
+) -> tuple[float, bool]:
+    """Two-sided randomization p-value for a paired design.
+
+    Under the null the annotated and null member of a pair are exchangeable, so
+    flipping the sign of any subset of differences is equally likely. This
+    assumes neither normality nor symmetry of the underlying distribution --
+    only that the labelling within a pair carries no information. The test is
+    enumerated exactly for small samples and sampled otherwise; the returned
+    flag records which was used.
+    """
+    differences = differences[np.isfinite(differences)]
+    n = differences.size
+    if n == 0:
+        return float("nan"), False
+    observed = abs(float(differences.mean()))
+    if n <= max_exact:
+        signs = 1 - 2 * (
+            (np.arange(2**n)[:, None] >> np.arange(n)[None, :]) & 1
+        )
+        statistics = np.abs((signs * differences).mean(axis=1))
+        return float((statistics >= observed - 1e-12).mean()), True
+    rng = np.random.default_rng(seed)
+    signs = rng.choice([-1.0, 1.0], size=(draws, n))
+    statistics = np.abs((signs * differences).mean(axis=1))
+    # +1 in numerator and denominator: the observed labelling is itself one of
+    # the equally likely outcomes, which keeps the p-value from reaching 0.
+    return float((np.sum(statistics >= observed - 1e-12) + 1) / (draws + 1)), False
+
+
+def paired_ccc_test(
+    differences: np.ndarray, seed: int = 20260820
+) -> dict[str, float | int | bool]:
+    """Paired comparison of annotated vs null CCC.
+
+    CCC is bounded and its marginal distribution is skewed, so the
+    rank-based and randomization results are the ones to report; the t-test is
+    retained only as a familiar reference and is accompanied by a normality
+    check on the differences it assumes.
+    """
+    differences = np.asarray(differences, dtype=float)
+    differences = differences[np.isfinite(differences)]
+    n = int(differences.size)
+    empty = {
+        "n_pairs": n,
+        "median_difference": float(np.median(differences)) if n else np.nan,
+        "hodges_lehmann": hodges_lehmann(differences),
+        "n_negative": int((differences < 0).sum()),
+        "n_positive": int((differences > 0).sum()),
+        "wilcoxon_statistic": np.nan,
+        "wilcoxon_p_value": np.nan,
+        "rank_biserial": np.nan,
+        "sign_test_p_value": np.nan,
+        "permutation_p_value": np.nan,
+        "permutation_exact": False,
+        "mean_difference": float(differences.mean()) if n else np.nan,
+        "sd_difference": np.nan,
+        "t_statistic": np.nan,
+        "t_p_value": np.nan,
+        "cohens_dz": np.nan,
+        "shapiro_p_value": np.nan,
+    }
+    if n < 2:
+        return empty
+
+    positive_rank_sum = float(
+        wilcoxon(differences, alternative="two-sided").statistic
+    )
+    wilcoxon_result = wilcoxon(differences)
+    total_rank_sum = n * (n + 1) / 2.0
+    permutation_p, permutation_exact = sign_flip_permutation_p(differences, seed)
+    non_zero = int((differences != 0).sum())
+    sign_p = (
+        float(
+            binomtest(int((differences < 0).sum()), non_zero, 0.5).pvalue
+        )
+        if non_zero
+        else np.nan
+    )
+    mean = float(differences.mean())
+    sd = float(differences.std(ddof=1))
+    t_statistic, t_p = ttest_rel(differences, np.zeros_like(differences))
+    return {
+        **empty,
+        "wilcoxon_statistic": positive_rank_sum,
+        "wilcoxon_p_value": float(wilcoxon_result.pvalue),
+        # Rank-biserial: signed share of the total rank mass, in [-1, 1].
+        "rank_biserial": float(2 * positive_rank_sum / total_rank_sum - 1),
+        "sign_test_p_value": sign_p,
+        "permutation_p_value": permutation_p,
+        "permutation_exact": permutation_exact,
+        "sd_difference": sd,
+        "t_statistic": float(t_statistic),
+        "t_p_value": float(t_p),
+        "cohens_dz": mean / sd if sd > 0 else np.nan,
+        "shapiro_p_value": float(shapiro(differences).pvalue) if n >= 3 else np.nan,
+    }
+
+
+def cell_type_level_test(
+    merged: pd.DataFrame, seed: int = 20260820
+) -> dict[str, float | int | bool]:
+    """Test with the cell type, not the pair, as the independent unit.
+
+    Pairs within a cell type share supertypes and are therefore not
+    independent, which makes every pair-level p-value anticonservative.
+    Collapsing each cell type to its median difference first gives one value
+    per genuinely independent unit; with nine of them the sign-flip
+    randomization is enumerated exactly.
+    """
+    per_cell_type = (
+        merged.groupby("cell_type")["ccc_difference"].median().to_numpy(dtype=float)
+    )
+    per_cell_type = per_cell_type[np.isfinite(per_cell_type)]
+    permutation_p, permutation_exact = sign_flip_permutation_p(per_cell_type, seed)
+    non_zero = int((per_cell_type != 0).sum())
+    return {
+        "n_cell_types": int(per_cell_type.size),
+        "median_of_cell_type_medians": (
+            float(np.median(per_cell_type)) if per_cell_type.size else np.nan
+        ),
+        "n_negative": int((per_cell_type < 0).sum()),
+        "n_positive": int((per_cell_type > 0).sum()),
+        "permutation_p_value": permutation_p,
+        "permutation_exact": permutation_exact,
+        "sign_test_p_value": (
+            float(binomtest(int((per_cell_type < 0).sum()), non_zero, 0.5).pvalue)
+            if non_zero
+            else np.nan
+        ),
+        "wilcoxon_p_value": (
+            float(wilcoxon(per_cell_type).pvalue) if per_cell_type.size >= 2 else np.nan
+        ),
+    }
+
+
+def summarize_paired_null_comparison(
+    merged: pd.DataFrame, targets: list[str]
+) -> pd.DataFrame:
+    """Per-cell-type and pooled paired tests of annotated vs size-matched null."""
+    rows = []
+    for cell_type in targets + ["ALL"]:
+        frame = (
+            merged if cell_type == "ALL" else merged[merged["cell_type"] == cell_type]
+        )
+        if frame.empty:
+            continue
+        rows.append(
+            {
+                "cell_type": cell_type,
+                "median_ccc_annotated": float(
+                    frame["ccc_annotated"].median()
+                ),
+                "median_ccc_null": float(frame["ccc_null"].median()),
+                **paired_ccc_test(frame["ccc_difference"].to_numpy(dtype=float)),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def significance_stars(p_value: float) -> str:
+    """Conventional star notation; ``p_value`` is the rank-based p-value."""
+    if not np.isfinite(p_value):
+        return "n/a"
+    if p_value < 1e-3:
+        return "***"
+    if p_value < 1e-2:
+        return "**"
+    if p_value < 5e-2:
+        return "*"
+    return "ns"
+
+
+def _draw_ccc_distribution(
+    ax: plt.Axes,
+    position: float,
+    values: np.ndarray,
+    color: str,
+    box_color: str,
+    median_color: str,
+    width: float,
+    jitter: float,
+    rng: np.random.Generator,
+    label: str | None = None,
+) -> None:
+    """Draw one jittered point cloud plus its box at ``position``."""
+    if not values.size:
+        return
+    ax.scatter(
+        position + rng.uniform(-jitter, jitter, size=values.size),
+        values,
+        s=22,
+        color=color,
+        alpha=0.65,
+        linewidth=0,
+        zorder=3,
+        label=label,
+    )
+    boxplot = ax.boxplot(
+        [values],
+        positions=[position],
+        widths=width,
+        patch_artist=True,
+        showfliers=False,
+        medianprops={"color": median_color, "linewidth": 1.8},
+        whiskerprops={"color": "#555555", "linewidth": 1.0},
+        capprops={"color": "#555555", "linewidth": 1.0},
+        boxprops={"facecolor": box_color, "edgecolor": "#555555", "alpha": 0.65},
+        zorder=2,
+    )
+    for artist in boxplot["boxes"]:
+        artist.set_zorder(2)
 
 
 def plot_pairwise_supertype_ccc(
@@ -1222,33 +1557,106 @@ def plot_pairwise_supertype_ccc(
     whole_agreement_summary: pd.DataFrame,
     targets: list[str],
     figures_dir: Path,
+    grouping: str = "supertype",
     model: str = "bayesian",
+    null_comparison: pd.DataFrame | None = None,
+    null_tests: pd.DataFrame | None = None,
+    cell_type_test: dict[str, float | int | bool] | None = None,
 ) -> None:
-    """Plot distributions of within-parent pairwise supertype CCC values."""
-    fig, ax = plt.subplots(figsize=(14, 7.2))
+    """Plot distributions of within-parent pairwise subgroup CCC values.
+
+    With ``null_comparison`` supplied, each cell type shows two boxes: the
+    annotated supertype pairs and their size-matched random counterparts. The
+    two are paired pair-for-pair, so the accompanying paired t-test in
+    ``null_tests`` is annotated directly above each cell type.
+    """
+    noun = subgroup_noun(grouping)
+    noun_plural = subgroup_noun(grouping, plural=True)
+    paired = null_comparison is not None
+    fig, ax = plt.subplots(figsize=(15.5 if paired else 14, 7.2))
     summary_by_cell_type = summary.set_index("cell_type")
     whole_by_cell_type = whole_agreement_summary.set_index("cell_type")
-    box_data = []
-    box_positions = []
+    test_by_cell_type = (
+        null_tests.set_index("cell_type") if null_tests is not None else None
+    )
     rng = np.random.default_rng(20260811)
+    offset = 0.21 if paired else 0.0
+    width = 0.34 if paired else 0.48
+    jitter = 0.11 if paired else 0.16
+    legend_drawn = False
+    ceiling = 1.08
 
     for position, cell_type in enumerate(targets, start=1):
-        values = pairwise.loc[
-            pairwise["cell_type"] == cell_type, "concordance_correlation"
-        ].dropna().to_numpy(dtype=float)
-        if values.size:
-            box_data.append(values)
-            box_positions.append(position)
-            jitter = rng.uniform(-0.16, 0.16, size=values.size)
-            ax.scatter(
-                position + jitter,
-                values,
-                s=24,
-                color="#e45756",
-                alpha=0.65,
-                linewidth=0,
-                zorder=3,
+        if paired:
+            frame = null_comparison[null_comparison["cell_type"] == cell_type]
+            values = frame["ccc_annotated"].dropna().to_numpy(dtype=float)
+            null_values = frame["ccc_null"].dropna().to_numpy(dtype=float)
+        else:
+            values = (
+                pairwise.loc[
+                    pairwise["cell_type"] == cell_type, "concordance_correlation"
+                ]
+                .dropna()
+                .to_numpy(dtype=float)
             )
+            null_values = np.array([], dtype=float)
+
+        if not values.size:
+            ax.text(
+                position,
+                0.0,
+                f"one {noun}\n(no pairs)",
+                ha="center",
+                va="center",
+                fontsize=9,
+                color="#666666",
+            )
+            continue
+
+        _draw_ccc_distribution(
+            ax,
+            position - offset,
+            values,
+            "#e45756",
+            "#f2b8b5",
+            "#8b1a1a",
+            width,
+            jitter,
+            rng,
+            label=None if legend_drawn else "Annotated supertype pairs",
+        )
+        if paired:
+            _draw_ccc_distribution(
+                ax,
+                position + offset,
+                null_values,
+                "#4c78a8",
+                "#b6cde4",
+                "#1f3f66",
+                width,
+                jitter,
+                rng,
+                label=(
+                    None
+                    if legend_drawn
+                    else "Size-matched random pairs (null)"
+                ),
+            )
+            legend_drawn = True
+            top = float(max(values.max(), null_values.max()))
+            row = test_by_cell_type.loc[cell_type]
+            ax.text(
+                position,
+                min(ceiling - 0.06, top + 0.05),
+                f"{significance_stars(float(row['wilcoxon_p_value']))}\n"
+                f"HL={float(row['hodges_lehmann']):+.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                color="#333333",
+            )
+        else:
+            legend_drawn = True
             median = summary_by_cell_type.loc[cell_type, "median_pairwise_ccc"]
             ax.text(
                 position,
@@ -1259,32 +1667,6 @@ def plot_pairwise_supertype_ccc(
                 fontsize=8,
                 color="#7a2e2d",
             )
-        else:
-            ax.text(
-                position,
-                0.0,
-                "one supertype\n(no pairs)",
-                ha="center",
-                va="center",
-                fontsize=9,
-                color="#666666",
-            )
-
-    if box_data:
-        boxplot = ax.boxplot(
-            box_data,
-            positions=box_positions,
-            widths=0.48,
-            patch_artist=True,
-            showfliers=False,
-            medianprops={"color": "#8b1a1a", "linewidth": 1.8},
-            whiskerprops={"color": "#555555", "linewidth": 1.0},
-            capprops={"color": "#555555", "linewidth": 1.0},
-            boxprops={"facecolor": "#f2b8b5", "edgecolor": "#555555", "alpha": 0.65},
-            zorder=2,
-        )
-        for artist in boxplot["boxes"]:
-            artist.set_zorder(2)
 
     for position, cell_type in enumerate(targets, start=1):
         if cell_type not in whole_by_cell_type.index:
@@ -1295,7 +1677,7 @@ def plot_pairwise_supertype_ccc(
         if not np.isfinite(baseline):
             continue
         ax.scatter(
-            position,
+            position - offset,
             baseline,
             marker="D",
             s=58,
@@ -1304,16 +1686,17 @@ def plot_pairwise_supertype_ccc(
             linewidth=1.8,
             zorder=5,
         )
-        ax.text(
-            position,
-            min(1.055, baseline + 0.025),
-            f"{baseline:.2f}",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-            color="#1f77b4",
-            fontweight="bold",
-        )
+        if not paired:
+            ax.text(
+                position,
+                min(1.055, baseline + 0.025),
+                f"{baseline:.2f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                color="#1f77b4",
+                fontweight="bold",
+            )
 
     labels = []
     for cell_type in targets:
@@ -1323,26 +1706,72 @@ def plot_pairwise_supertype_ccc(
     ax.axhline(1.0, color="#555555", ls="--", lw=1.0, zorder=1)
     ax.set_xlim(0.4, len(targets) + 0.6)
     finite_ccc = pairwise["concordance_correlation"].dropna().to_numpy(dtype=float)
+    if paired:
+        finite_ccc = np.concatenate(
+            [finite_ccc, null_comparison["ccc_null"].dropna().to_numpy(dtype=float)]
+        )
     lower_limit = (
         max(-1.08, min(-0.08, np.floor((finite_ccc.min() - 0.05) * 10) / 10))
         if finite_ccc.size
         else -0.08
     )
-    ax.set_ylim(lower_limit, 1.08)
+    ax.set_ylim(lower_limit, ceiling)
     ax.set_ylabel("Lin concordance correlation (CCC)\nacross fitted cCREs")
-    ax.set_title(
-        f"{model.capitalize()} activity heterogeneity among annotated supertypes "
-        "within each cell type",
-        fontsize=14,
-    )
+    if paired:
+        overall = null_tests.loc[null_tests["cell_type"] == "ALL"].iloc[0]
+        ax.set_title(
+            f"{model.capitalize()} activity divergence among {noun_plural} "
+            "versus size-matched random cell subsets",
+            fontsize=14,
+        )
+        cluster_note = ""
+        if cell_type_test is not None:
+            cluster_note = (
+                "\nCell type as the independent unit "
+                f"(n = {int(cell_type_test['n_cell_types'])}): exact sign-flip "
+                f"p = {float(cell_type_test['permutation_p_value']):.3g}"
+            )
+        ax.text(
+            0.5,
+            0.02,
+            "Pooled Wilcoxon signed-rank (annotated - null): "
+            f"Hodges-Lehmann = {float(overall['hodges_lehmann']):+.3f}, "
+            f"p = {float(overall['wilcoxon_p_value']):.2g}, "
+            f"r_rb = {float(overall['rank_biserial']):+.2f}, "
+            f"n = {int(overall['n_pairs'])} pairs"
+            + cluster_note,
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "alpha": 0.85},
+        )
+        ax.legend(frameon=False, loc="upper left", fontsize=9, ncols=2)
+    else:
+        ax.set_title(
+            f"{model.capitalize()} activity divergence among {noun_plural} "
+            "within each cell type",
+            fontsize=14,
+        )
     ax.grid(axis="y", color="#dddddd", linewidth=0.6, alpha=0.7)
     ax.set_axisbelow(True)
     fig.text(
         0.5,
         0.012,
-        "Red points/boxes: pairwise CCC among annotated supertypes. Blue diamonds: "
-        "CCC of the cell-count-weighted supertype mean versus the intact whole cell type. "
-        "Small groups may be noisier.",
+        (
+            "Each point is one within-parent pair; the null pair uses two random cell "
+            "subsets with the same two cell counts. Stars: per-cell-type Wilcoxon "
+            "signed-rank (*** p<0.001, ** p<0.01, * p<0.05); HL is the Hodges-Lehmann "
+            "shift. Blue diamonds: CCC of the cell-count-weighted supertype mean "
+            "versus the intact whole cell type. Pair-level tests share supertypes and "
+            "are anticonservative, hence the cell-type-level test above."
+            if paired
+            else (
+                f"Red points/boxes: pairwise CCC among {noun_plural}. Blue diamonds: "
+                f"CCC of the cell-count-weighted {noun} mean versus the intact whole "
+                "cell type. Small groups may be noisier."
+            )
+        ),
         ha="center",
         va="bottom",
         fontsize=9,
@@ -1351,7 +1780,7 @@ def plot_pairwise_supertype_ccc(
     fig.tight_layout(rect=(0, 0.06, 1, 0.96))
     save_figure(
         fig,
-        figures_dir / artifact_names("supertype", model)["pairwise_figure"],
+        figures_dir / artifact_names(grouping, model)["pairwise_figure"],
     )
 
 
@@ -1359,9 +1788,12 @@ def plot_pairwise_ccc_vs_minimum_cells(
     pairwise: pd.DataFrame,
     targets: list[str],
     figures_dir: Path,
+    grouping: str = "supertype",
     model: str = "bayesian",
 ) -> None:
-    """Plot pairwise supertype CCC against the smaller group's cell count."""
+    """Plot pairwise subgroup CCC against the smaller group's cell count."""
+    noun = subgroup_noun(grouping)
+    noun_plural = subgroup_noun(grouping, plural=True)
     valid = pairwise[
         np.isfinite(pairwise["concordance_correlation"])
         & np.isfinite(pairwise["minimum_pair_cells"])
@@ -1415,11 +1847,11 @@ def plot_pairwise_ccc_vs_minimum_cells(
         bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "alpha": 0.85},
     )
     ax.set_xscale("log")
-    ax.set_xlabel("Minimum cell count in the supertype pair (log scale)")
+    ax.set_xlabel(f"Minimum cell count in the {noun} pair (log scale)")
     ax.set_ylabel("Pairwise Lin concordance correlation (CCC)\nacross fitted cCREs")
     ax.set_ylim(min(-0.05, float(y.min()) - 0.04), min(1.02, float(y.max()) + 0.08))
     ax.set_title(
-        f"{model.capitalize()} pairwise supertype agreement increases with cell support",
+        f"{model.capitalize()} pairwise {noun} agreement vs cell support",
         fontsize=14,
     )
     ax.grid(color="#dddddd", linewidth=0.6, alpha=0.7)
@@ -1434,8 +1866,8 @@ def plot_pairwise_ccc_vs_minimum_cells(
     fig.text(
         0.43,
         0.012,
-        "Each point is one within-parent annotated-supertype pair; Endo NN has no pair. "
-        "The dashed line is a visual guide, not a fitted biological model.",
+        f"Each point is one within-parent pair of {noun_plural}; single-group parents "
+        "have no pair. The dashed line is a visual guide, not a fitted model.",
         ha="center",
         va="bottom",
         fontsize=9,
@@ -1445,7 +1877,7 @@ def plot_pairwise_ccc_vs_minimum_cells(
     save_figure(
         fig,
         figures_dir
-        / artifact_names("supertype", model)["pairwise_support_figure"],
+        / artifact_names(grouping, model)["pairwise_support_figure"],
     )
 
 
@@ -1509,10 +1941,13 @@ def main() -> None:
         targets,
         subgroups_by_subclass,
         excluded,
-        subgroup_weights=subgroup_weights if grouping == "supertype" else None,
+        subgroup_weights=(
+            subgroup_weights if grouping in SUPERTYPE_LIKE_GROUPINGS else None
+        ),
     )
     summary = summarize_agreement(
-        agreement, include_supertype_heterogeneity=grouping == "supertype"
+        agreement,
+        include_supertype_heterogeneity=grouping in SUPERTYPE_LIKE_GROUPINGS,
     )
     cell_counts = (
         assignment.groupby("original_subclass", sort=False)
@@ -1547,7 +1982,7 @@ def main() -> None:
     pairwise = None
     pairwise_summary = None
     pairwise_support_association = None
-    if grouping == "supertype":
+    if grouping in SUPERTYPE_LIKE_GROUPINGS:
         pairwise = pairwise_supertype_agreement(
             split,
             targets,
@@ -1578,6 +2013,98 @@ def main() -> None:
                 "biological heterogeneity with estimation noise"
             ),
         }
+        null_comparison = None
+        null_tests = None
+        cell_type_test = None
+        if args.null_split_bayes_dir is not None:
+            if grouping != "supertype":
+                raise ValueError(
+                    "--null-split-bayes-dir applies to the annotated-supertype "
+                    f"run; this run has grouping={grouping!r}"
+                )
+            null_targets, null_members, null_grouping = split_targets(
+                args.null_split_bayes_dir
+            )
+            if null_grouping != "supertype_like_random":
+                raise ValueError(
+                    "--null-split-bayes-dir must point at a "
+                    f"supertype_like_random fit; found {null_grouping!r}"
+                )
+            if null_targets != targets:
+                raise ValueError(
+                    "null and annotated runs cover different cell types"
+                )
+            null_split = loader(args.null_split_bayes_dir, self_cre=self_cre)
+            null_assignment = pd.read_csv(
+                args.null_split_bayes_dir / "cell_group_assignment.csv"
+            )
+            null_weights = {
+                cell_type: (
+                    null_assignment[
+                        null_assignment["original_subclass"] == cell_type
+                    ]
+                    .groupby("new_subclass")
+                    .size()
+                    .astype(int)
+                    .to_dict()
+                )
+                for cell_type in targets
+            }
+            shared_cres = set(split.columns.astype(str)) - excluded
+            null_cres = set(null_split.columns.astype(str)) - excluded
+            if shared_cres != null_cres:
+                raise ValueError(
+                    "annotated and null fits disagree on the fitted cCRE set: "
+                    f"{len(shared_cres ^ null_cres)} cCREs differ"
+                )
+            null_pairwise = pairwise_supertype_agreement(
+                null_split, targets, null_members, null_weights, excluded
+            )
+            null_comparison = paired_null_comparison(
+                pairwise, null_pairwise, subgroups_by_subclass, null_members
+            )
+            null_tests = summarize_paired_null_comparison(
+                null_comparison, panel_targets
+            )
+            cell_type_test = cell_type_level_test(null_comparison)
+            null_pairwise.to_csv(
+                tables / "bayesian_supertype_pairwise_ccc_null.csv", index=False
+            )
+            null_comparison[
+                [
+                    "cell_type",
+                    "supertype_1_annotated",
+                    "supertype_2_annotated",
+                    "supertype_1_null",
+                    "supertype_2_null",
+                    "n_cells_1_annotated",
+                    "n_cells_2_annotated",
+                    "minimum_pair_cells_annotated",
+                    "ccc_annotated",
+                    "ccc_null",
+                    "ccc_difference",
+                ]
+            ].rename(
+                columns={
+                    "supertype_1_annotated": "supertype_1",
+                    "supertype_2_annotated": "supertype_2",
+                    "supertype_1_null": "random_group_1",
+                    "supertype_2_null": "random_group_2",
+                    "n_cells_1_annotated": "n_cells_1",
+                    "n_cells_2_annotated": "n_cells_2",
+                    "minimum_pair_cells_annotated": "minimum_pair_cells",
+                }
+            ).to_csv(
+                tables / "bayesian_supertype_pairwise_ccc_vs_null.csv", index=False
+            )
+            null_tests.to_csv(
+                tables / "bayesian_supertype_pairwise_ccc_null_tests.csv",
+                index=False,
+            )
+            pd.DataFrame([cell_type_test]).to_csv(
+                tables / "bayesian_supertype_pairwise_ccc_cell_type_test.csv",
+                index=False,
+            )
         pairwise.to_csv(tables / names["pairwise_table"], index=False)
         pairwise_summary.to_csv(
             tables / names["pairwise_summary"], index=False
@@ -1588,19 +2115,25 @@ def main() -> None:
             summary,
             panel_targets,
             figures,
+            grouping=grouping,
             model=args.model,
+            null_comparison=null_comparison,
+            null_tests=null_tests,
+            cell_type_test=cell_type_test,
         )
         plot_pairwise_ccc_vs_minimum_cells(
             pairwise,
             panel_targets,
             figures,
+            grouping=grouping,
             model=args.model,
         )
 
     n_subgroups_by_subclass = {
         target: len(subgroups_by_subclass[target]) for target in targets
     }
-    subgroup_noun = "random subset" if grouping == "random" else "annotated supertype"
+    noun = subgroup_noun(grouping)
+    noun_plural = subgroup_noun(grouping, plural=True)
 
     write_json(
         tables / names["manifest"],
@@ -1617,6 +2150,7 @@ def main() -> None:
             "subgroup_obs_column": (
                 None if grouping == "random" else "supertype_name"
             ),
+            "subgroup_unit": noun,
             "subgroups_by_subclass": subgroups_by_subclass,
             "n_subgroups_by_subclass": n_subgroups_by_subclass,
             "subgroup_cell_counts": {
@@ -1648,30 +2182,38 @@ def main() -> None:
             "x_metric": "negative-control-centered activity in intact cell type",
             "y_metric": (
                 "cell-count-weighted mean negative-control-centered activity "
-                "across annotated supertypes"
-                if grouping == "supertype"
+                f"across {noun_plural}"
+                if grouping in SUPERTYPE_LIKE_GROUPINGS
                 else (
                     "unweighted mean negative-control-centered activity across "
-                    f"{subgroup_noun}s"
+                    f"{noun_plural}"
                 )
             ),
             "aggregation": (
-                "cell-count-weighted" if grouping == "supertype" else "unweighted"
+                "cell-count-weighted"
+                if grouping in SUPERTYPE_LIKE_GROUPINGS
+                else "unweighted"
             ),
             "secondary_aggregation": (
-                "unweighted mean across annotated supertypes"
-                if grouping == "supertype"
+                f"unweighted mean across {noun_plural}"
+                if grouping in SUPERTYPE_LIKE_GROUPINGS
                 else None
             ),
             "error_bar": (
-                "unweighted sample standard deviation across annotated supertypes"
-                if grouping == "supertype"
-                else f"sample standard deviation across {subgroup_noun}s"
+                f"unweighted sample standard deviation across {noun_plural}"
+                if grouping in SUPERTYPE_LIKE_GROUPINGS
+                else f"sample standard deviation across {noun_plural}"
             ),
             "error_bar_interpretation": (
-                "between-supertype heterogeneity, not posterior or fit uncertainty"
+                "between-supertype biological heterogeneity, not posterior or fit "
+                "uncertainty"
                 if grouping == "supertype"
-                else "between-random-subset dispersion"
+                else (
+                    "estimation dispersion between random subsets at matched cell "
+                    "support"
+                    if grouping == "supertype_like_random"
+                    else "between-random-subset dispersion"
+                )
             ),
             "pairwise_supertype_analysis": (
                 {
@@ -1683,12 +2225,12 @@ def main() -> None:
                     ),
                     "metric": "Lin concordance correlation coefficient",
                     "comparison_unit": (
-                        "each unordered pair of annotated supertypes within a parent cell type"
+                        f"each unordered pair of {noun_plural} within a parent cell type"
                     ),
                     "feature_axis": "all fitted non-blacklisted cCREs",
                     "pair_weighting": "each supertype pair contributes once",
                     "baseline_marker": (
-                        "per-cell-type CCC of the cell-count-weighted supertype "
+                        f"per-cell-type CCC of the cell-count-weighted {noun} "
                         "mean versus the intact whole-cell-type activity"
                     ),
                     "baseline_source": names["summary"],
@@ -1698,8 +2240,55 @@ def main() -> None:
                         for row in pairwise_summary.itertuples(index=False)
                     },
                     "cell_support_association": pairwise_support_association,
+                    "size_matched_null": (
+                        {
+                            "null_split_bayes_dir": str(args.null_split_bayes_dir),
+                            "pair_matching": (
+                                "annotated pair (i, j) matched to the random pair "
+                                "(i, j) built from groups with the same two cell "
+                                "counts"
+                            ),
+                            "primary_test": (
+                                "Wilcoxon signed-rank on annotated - null CCC"
+                            ),
+                            "supporting_tests": [
+                                "exact sign test",
+                                "sign-flip randomization test",
+                                "paired t-test with a Shapiro-Wilk check on the "
+                                "differences",
+                            ],
+                            "effect_size": (
+                                "Hodges-Lehmann shift and rank-biserial correlation"
+                            ),
+                            "caveat": (
+                                "pairs share subgroups, so pair-level p-values are "
+                                "anticonservative; the cell-type-level test uses one "
+                                "median per cell type as the independent unit"
+                            ),
+                            "cell_type_level_test": jsonable(cell_type_test),
+                            "table": "bayesian_supertype_pairwise_ccc_vs_null.csv",
+                            "tests_table": (
+                                "bayesian_supertype_pairwise_ccc_null_tests.csv"
+                            ),
+                            "overall": {
+                                key: (
+                                    float(value)
+                                    if isinstance(value, (int, float, np.floating))
+                                    else value
+                                )
+                                for key, value in null_tests.loc[
+                                    null_tests["cell_type"] == "ALL"
+                                ]
+                                .iloc[0]
+                                .to_dict()
+                                .items()
+                            },
+                        }
+                        if null_tests is not None
+                        else None
+                    ),
                 }
-                if grouping == "supertype"
+                if grouping in SUPERTYPE_LIKE_GROUPINGS
                 else None
             ),
             "agreement_metrics": [
@@ -1722,9 +2311,9 @@ def main() -> None:
         f"[het] wrote {grouping} {args.model} agreement table to {tables}, "
         f"figure to {figures}"
     )
-    if grouping == "supertype":
+    if grouping in SUPERTYPE_LIKE_GROUPINGS:
         log(
-            f"[het] wrote {len(pairwise)} within-parent supertype-pair CCCs "
+            f"[het] wrote {len(pairwise)} within-parent {noun}-pair CCCs "
             f"and distribution figure; CCC vs minimum pair cells "
             f"Spearman rho={pairwise_support_association['spearman_rho']:.3f}"
         )

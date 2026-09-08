@@ -69,6 +69,88 @@ retains both supertype cell counts because low CCC involving a very small group
 may reflect greater estimation noise as well as biological heterogeneity.
 `Endo NN` has no pairwise value because one supertype cannot form a pair.
 
+## Size-matched random null (`supertype_like_random`)
+
+The annotated-supertype pairwise CCC mixes two effects: real between-supertype
+biology and estimation noise, which grows as a group shrinks. The null run
+removes the first and keeps the second. Within each of the ten target
+subclasses the cells are shuffled once and cut, **without replacement**, into
+blocks whose sizes are exactly the annotated supertype sizes of that subclass
+(63 groups in total, identical size profile per parent, seeded by
+`relabel.SPLIT_SEED`). Group `i` of a parent carries the cell count of that
+parent's `i`-th annotated supertype and is labelled
+`<subclass>_random_<i>`; the matched supertype is recorded in
+`cell_group_assignment.csv` for traceability.
+
+The fit, calibration, cCRE set, intact reference, and every plotting step are
+otherwise identical to the annotated-supertype workflow, so
+`results/supertype_like_random/figures/bayesian_supertype_pairwise_ccc.pdf`
+is directly comparable panel-for-panel with the annotated version under
+`results/supertype/`. Pairwise CCC that is high in the null but low in the
+annotated run is biological heterogeneity; pairwise CCC that is low in both is
+estimation noise at that cell support.
+
+```bash
+bash revision/heterogeneity/code/submit_supertype_like_random_all.sh
+```
+
+### Paired test against the annotated supertypes
+
+Once both fits exist, the annotated pairwise-CCC figure is redrawn with the
+null beside it:
+
+```bash
+python revision/heterogeneity/code/make_heterogeneity_plots.py \
+  --split-bayes-dir revision/heterogeneity/results/supertype/bayesian \
+  --null-split-bayes-dir revision/heterogeneity/results/supertype_like_random/bayesian \
+  --outdir revision/heterogeneity/results/supertype
+```
+
+`figures/bayesian_supertype_pairwise_ccc.pdf` then shows two boxes per cell
+type — annotated supertype pairs (red) and their size-matched random
+counterparts (blue). Annotated pair `(i, j)` is matched to the null pair built
+from the random groups carrying the same two cell counts, so the comparison is
+paired and a paired t-test on the CCC difference is well defined. The join is
+keyed on membership ordinals and the two cell counts are re-checked afterwards,
+so a mismatched null raises rather than silently comparing different-sized
+groups.
+
+CCC is bounded and its marginal distribution is skewed (Shapiro-Wilk
+p ~ 0.003 for both the annotated and the null CCCs), so the **Wilcoxon
+signed-rank test is the primary statistic**, with the Hodges-Lehmann shift and
+the rank-biserial correlation as effect sizes. Three further results are
+reported per cell type: an exact sign test (assumes only that a difference is
+equally likely to fall either way), a sign-flip randomization test (assumes
+only that the annotated and null member of a pair are exchangeable, enumerated
+exactly at n <= 20 and sampled with 20,000 draws above that), and the paired
+t-test with a Shapiro-Wilk check on the differences it actually assumes. The
+differences are in fact close to normal (W = 0.995, p = 0.66 pooled), so the
+four tests agree; the rank-based ones are reported because that agreement is
+an empirical finding, not something the design guarantees.
+
+**The pairs are not independent** — each supertype appears in many pairs — so
+every pair-level p-value is anticonservative. The conservative companion
+collapses each cell type to its median difference and tests the nine resulting
+independent values with an exactly enumerated sign-flip randomization
+(`bayesian_supertype_pairwise_ccc_cell_type_test.csv`). That is the number to
+quote when the claim is about cell types in general rather than about these
+particular supertype pairs.
+
+New tables under `results/supertype/tables/`:
+
+- `bayesian_supertype_pairwise_ccc_null.csv` — the null pairwise CCCs recomputed
+  under this run's calibration and cCRE set.
+- `bayesian_supertype_pairwise_ccc_vs_null.csv` — one row per matched pair with
+  both CCCs and their difference.
+- `bayesian_supertype_pairwise_ccc_null_tests.csv` — per-cell-type and pooled
+  Wilcoxon, sign, randomization, and t-test p-values with Hodges-Lehmann shift,
+  rank-biserial correlation, Cohen's dz, and the Shapiro-Wilk check.
+- `bayesian_supertype_pairwise_ccc_cell_type_test.csv` — the cell-type-level
+  test that treats each cell type as one independent unit.
+
+Outputs mirror `results/supertype/` file-for-file (same table, summary, and
+figure names) under `results/supertype_like_random/`.
+
 ## Run
 
 ```bash
