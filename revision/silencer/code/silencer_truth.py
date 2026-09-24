@@ -52,7 +52,7 @@ def subclass_number_to_name(annotation_csv: Path | None = None) -> pd.Series:
     return table.groupby("subclass_number")["subclass"].first()
 
 
-def _rename_to_subclass_names(
+def rename_to_subclass_names(
     matrix: pd.DataFrame, mapping: pd.Series
 ) -> tuple[pd.DataFrame, tuple[str, ...]]:
     """Rename cCRE x filename columns to subclass names, dropping unmapped ones."""
@@ -72,6 +72,10 @@ def _rename_to_subclass_names(
     return kept, tuple(unmapped)
 
 
+#: Kept for callers written against the private name.
+_rename_to_subclass_names = rename_to_subclass_names
+
+
 def load_silencer_truth(
     results_dir: Path | None = None, annotation_csv: Path | None = None
 ) -> SilencerTruth:
@@ -87,10 +91,10 @@ def load_silencer_truth(
         if not path.exists():
             raise FileNotFoundError(f"{path} missing; run annotate_chromstates.py first")
     mapping = subclass_number_to_name(annotation_csv)
-    repressive, unmapped = _rename_to_subclass_names(
+    repressive, unmapped = rename_to_subclass_names(
         pd.read_csv(repressive_path, index_col=0), mapping
     )
-    nd, _ = _rename_to_subclass_names(pd.read_csv(nd_path, index_col=0), mapping)
+    nd, _ = rename_to_subclass_names(pd.read_csv(nd_path, index_col=0), mapping)
     return SilencerTruth(
         repressive_fraction=repressive.T,
         nd_fraction=nd.reindex(columns=repressive.columns).T,
