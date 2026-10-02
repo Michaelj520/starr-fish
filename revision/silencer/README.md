@@ -259,3 +259,37 @@ ChromHMM-repressed.
 | `figures/silencer_two_experiment_concordance.pdf` | effect scatter coloured by call agreement, 2x2 call table with kappa, q-value histograms |
 | `figures/silencer_two_experiment_precision_recall.pdf` | precision, recall, enrichment and AP/chance for the three arms |
 | `figures/silencer_two_experiment_pr_curves.pdf` | PR curves per arm |
+
+---
+
+# Replicate-concordant left-tail heatmap
+
+Same layout as
+`revision/origin_vs_new/results/comparison/figures/origin_vs_new_replicate_concordant_activity_heatmap_t7_ge50.pdf`
+(mean-control reference), with the left-tail test and the ChromHMM labels:
+
+- **Universe**: the 1170 pairs eligible at T7 >= 50 in both runs. BH is redone
+  over `p_left` within that set for each run (the shipped `q_left` is BH over
+  each run's own pairs), then pairs are kept when the calls agree
+  (`both_significant` or `neither_significant`) **and** the pair has a ChromHMM
+  annotation: 636 pairs, 16 cell types, 111 cCREs.
+- **Colour**: posterior mean target log_gamma minus the mean of the 7 ordinary
+  controls, from the left-tail test tables. The control-spread strip comes from
+  `Bayes_*/tables`; the script checks that the exported activity equals the
+  tests' activity (max diff 5e-10) so both come from one posterior.
+- **Star**: shared-universe BH `q_left <= 0.05`. **Black box**: silencer,
+  `Chr-R + Hc-P > 0.1`. **Green box**: insulator, `Chr-O > 0.9` and
+  `Chr-A < 0.1` (`revision/insulator/`). No pair carries both labels.
+
+```bash
+python revision/silencer/code/plot_left_tail_heatmap.py
+```
+
+Of the 636 shown pairs, 156 are starred in both runs (24.5%). 26 of the 98
+silencers are starred (26.5%) and 2 of the 27 insulators (7.4%).
+
+| File | Contents |
+|---|---|
+| `figures/silencer_left_tail_replicate_concordant_heatmap_t7_ge50.pdf` | the heatmap (`.png` beside it) |
+| `results/silencer_left_tail_replicate_concordant_heatmap_t7_ge50_values.csv.gz` | every shown pair: both runs' activity, `p_left`, shared-universe `q_left`, T7, ChromHMM fractions and labels |
+| `results/silencer_left_tail_replicate_concordant_heatmap_t7_ge50_manifest.json` | inputs, call-status counts on the common and shown sets, colour limits, per-panel box and star counts |
