@@ -12,6 +12,7 @@ from .copy_number import (
     infer_copy_number,
     infer_copy_number_from_fit,
     load_copy_number_draws,
+    thin_draws,
 )
 from .fit import fit_nuts, fit_svi
 from .initialize import init_cre_from_moments, init_from_moments
@@ -45,4 +46,5 @@ __all__ = [
     "summarize_log_lambda_posterior",
     "summarize_lognormal_infection",
     "summarize_posterior",
+    "thin_draws",
 ]

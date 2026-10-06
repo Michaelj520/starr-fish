@@ -41,6 +41,11 @@ constants; only optimiser settings are flags.
 - `run_bayes_multibc.py`: the fit script. It refuses an outdir that already holds a
   `run_manifest.json` unless you pass `--overwrite`.
 - `submit_bayes_multibc.slurm`: the GPU job. It writes to `bayesian/` and logs to `logs/`.
+- `export_multibc_activity.py`: reduces the posterior to `tables/global_barcode_activities.csv`,
+  one row per barcode. `activity` is the posterior mean of `log_gamma` minus the mean
+  `log_gamma` of the 5 barcode-only controls, computed per draw; `activity_lo`/`activity_hi`
+  are the 2.5%/97.5% quantiles. `../barcode_shuffling/plot_activities.py --method bayes`
+  plots this table.
 - `test_multibc_data.py`: loader tests on a synthetic h5ad.
 
 ## Run
@@ -57,6 +62,10 @@ From the repository root:
 
 # full fit
 sbatch revision/Bayes_multiBC/submit_bayes_multibc.slurm
+
+# per-barcode activity table, then the figure
+/gpfs/commons/home/guojiezhong/miniconda3/envs/bayes-jax/bin/python revision/Bayes_multiBC/export_multibc_activity.py
+/gpfs/commons/home/guojiezhong/miniconda3/envs/bayes-jax/bin/python revision/barcode_shuffling/plot_activities.py --method bayes
 ```
 
 ## Outputs (`bayesian/`)

@@ -168,7 +168,9 @@ python -m baystarrfish copy-number \
     --with-sd --max-draws 200
 ```
 
-or, for the two refit datasets, the runner that wraps exactly that:
+or, for the two refit datasets, the runner that wraps exactly that and also
+writes the activity matrices and the control calibration table into
+`<dataset>/copy_number/` (see `revision/run_Bayes/README.md`):
 
 ```bash
 sbatch --job-name=cn_origin \

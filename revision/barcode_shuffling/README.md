@@ -163,3 +163,13 @@ coordinates and category order. The default (`--order mean`) orders cCREs
 by the arithmetic mean of their five barcode log activities, lowest first,
 with controls last. `--order median` uses median barcode activity and
 `--order name` uses cCRE name order.
+
+`--method bayes` plots the Bayesian activity from
+`../Bayes_multiBC/tables/global_barcode_activities.csv` (written by
+`../Bayes_multiBC/export_multibc_activity.py`) to
+`figures/bayes/global_ccre_barcode_bayes_activity_boxplot.{png,pdf,csv}`. Each
+point is a barcode's posterior-mean `log_gamma` minus the mean `log_gamma` of the
+five barcode-only controls, so the dashed zero line is the control mean. That
+fit uses the 14,919 cells of `scdata_260821_SFv6_multiBC_FINAL.h5ad` with
+`saturation_fail == False`; the RNA/DNA and GLM figures use all 27,889 cells of
+`scdata_260821_SFv6_multiBC.h5ad`.

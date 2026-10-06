@@ -78,6 +78,24 @@ the only place where `q` is derived rather than read.
 column and filename tokens from the threshold, so the writer and every reader
 agree on the spelling.
 
+## Copy-number folder (per-cell quantities)
+
+`submit_copy_number_matrix.slurm <old|new>` writes `<dataset>/copy_number/`:
+
+| file | content |
+|---|---|
+| `copy_number.npz` | `E[k \| t7, cre]` mean and sd per (cell, cCRE), float32 |
+| `copy_number_copies.csv.gz` | the mean, cells x cCREs |
+| `activity_normalized.npz` | copies, Gamma-conjugate posterior activity, and that activity divided per draw by the cell type's control reference (`NaN` below pooled control T7 50) |
+| `activity_posterior.npz` | the posterior activity alone (`extract_activity_posterior.py`) |
+| `negative_control_reference_check.csv` | each per-cell estimator on the 7 controls against its parameter-level target (`check_negative_control_reference.py`) |
+
+All four products use the same 200 evenly-spaced draws (`MAX_DRAWS`). Files
+already present are skipped, so the old dataset is a no-op and an interrupted
+job can be resubmitted. Rerunning the two scripts on the old fit reproduces its
+shipped files: `activity_posterior.npz` bit for bit, the check table to 6e-8
+relative (float32 rounding).
+
 ## Raw count aggregation
 
 The subclass x cCRE count totals come from `baystarrfish.data.read_grouped_counts`,

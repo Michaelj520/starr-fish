@@ -58,6 +58,7 @@ __all__ = [
     "infer_copy_number",
     "infer_copy_number_from_fit",
     "load_copy_number_draws",
+    "thin_draws",
 ]
 
 #: Sites the copy-number posterior needs beyond the scalars.
@@ -333,10 +334,15 @@ def _align_axes(
     return group_index, cre_index
 
 
-def _thin_draws(
+def thin_draws(
     draws: Mapping[str, np.ndarray], max_draws: int | None, *, verbose: bool
 ) -> Mapping[str, np.ndarray]:
-    """Keep ``max_draws`` evenly-spaced posterior draws, or all of them."""
+    """Keep ``max_draws`` evenly-spaced posterior draws, or all of them.
+
+    Public so that anything computed beside a reconstruction -- a control
+    reference, a calibration target -- can be built from exactly the draws the
+    reconstruction used: thin once, then pass the result with ``max_draws=None``.
+    """
     if max_draws is None:
         return draws
     if max_draws < 1:
@@ -547,7 +553,7 @@ def infer_copy_number(
         cre_names, draws["cre_names"], group_labels, draws["group_names"]
     )
     n_groups = len(draws["group_names"])
-    draws = _thin_draws(draws, max_draws, verbose=verbose)
+    draws = thin_draws(draws, max_draws, verbose=verbose)
     _warn_if_truncated(draws, kmax, group_index, cre_index)
 
     log_baseline = None
